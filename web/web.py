@@ -52,12 +52,3 @@ def index():
     </html>
     """
     return render_template_string(html, **bot_status)
-
-@app.route('/ping')
-def ping():
-    run_bot_once()
-    bot_status["last_check"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    return f"✅ Bot triggered at {bot_status['last_check']}", 200
-
-def start_web():
-    app.run(host='0.0.0.0', port=8080)
