@@ -18,8 +18,15 @@ def send_telegram(msg):
 def get_live_matches():
     url = f"{BASE_URL}/fixtures?live=all"
     res = requests.get(url, headers=HEADERS)
-    return res.json()['response']
-
+    if res.status_code != 200:
+        print(f"❌ API ERROR: {res.status_code} - {res.text}")
+        return []
+    try:
+        return res.json()['response']
+    except Exception as e:
+        print(f"❌ JSON Decode Error: {e}")
+        return []
+        
 def process_match(match):
     fixture_id = match['fixture']['id']
     match_name = f"{match['teams']['home']['name']} vs {match['teams']['away']['name']}"
