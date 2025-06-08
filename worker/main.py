@@ -5,4 +5,4 @@ if __name__ == "__main__":
     print("🔁 Bot worker started")
     while True:
         run_bot_once()
-        time.sleep(60)
+        time.sleep(180)
