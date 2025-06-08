@@ -2,11 +2,15 @@ from flask import Flask, render_template_string
 from datetime import datetime
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'worker')))
 
-from bot import run_bot_once
+# Adjust Python path to import from parent directory
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import your bot logic
+from worker.bot import run_bot_once
 
 app = Flask(__name__)
+
 bot_status = {
     "active_matches": [],
     "last_check": "Not yet run"
@@ -56,3 +60,17 @@ def index():
     </html>
     """
     return render_template_string(html, **bot_status)
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+# Optional: trigger bot manually from web (not used unless routed)
+@app.route('/run-bot')
+def run_bot():
+    try:
+        bot_status["active_matches"] = run_bot_once()
+        bot_status["last_check"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        return "Bot run successfully", 200
+    except Exception as e:
+        return f"Bot run failed: {str(e)}", 500
