@@ -1,10 +1,20 @@
 services:
   - type: web
-    name: flask-betting-tracker
+    name: livebetting-tracker-web
     env: python
-    buildCommand: ""
-    startCommand: gunicorn -w 4 -b 0.0.0.0:10000 main:app
     plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn web.web:app --bind 0.0.0.0:$PORT
+    autoDeploy: true
     envVars:
-      - key: PORT
-        value: 10000
+      - fromDotEnv: true
+
+  - type: worker
+    name: livebetting-tracker-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker/main.py
+    autoDeploy: true
+    envVars:
+      - fromDotEnv: true
