@@ -1,5 +1,8 @@
 from flask import Flask, render_template_string
 from datetime import datetime
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bot import run_bot_once
 
 app = Flask(__name__)
