@@ -15,6 +15,8 @@ if __name__ == "__main__":
 
     try:
         while True:
+            from bot import run_bot_once
+            run_bot_once()
             time.sleep(60)
     except KeyboardInterrupt:
         print("🔴 Shutting down...")
