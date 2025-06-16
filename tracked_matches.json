@@ -1,0 +1,18 @@
+STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "tracked_matches.json")
+
+# Load tracked_matches on startup
+if os.path.exists(STATE_FILE):
+    try:
+        with open(STATE_FILE, "r") as f:
+            tracked_matches = json.load(f)
+    except Exception as e:
+        print(f"❌ Failed to load tracked_matches: {e}")
+        tracked_matches = {}
+
+def save_tracked_matches():
+    """Persist the in-memory tracked_matches to disk."""
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(tracked_matches, f)
+    except Exception as e:
+        print(f"❌ Failed to save tracked_matches: {e}")
