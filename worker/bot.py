@@ -3,130 +3,230 @@ from dotenv import load_dotenv
 load_dotenv()
 import os, json, time
 from datetime import datetime
+import logging
 
-API_KEY         = os.getenv("API_KEY")
-TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID= os.getenv("TELEGRAM_CHAT_ID")
-HEADERS         = {'x-apisports-key': API_KEY}
-BASE_URL        = 'https://v3.football.api-sports.io'
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('bot.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
-STATUS_FILE     = os.path.join(os.path.dirname(__file__), "..", "bot_status.json")
-STATE_FILE      = os.path.join(os.path.dirname(__file__), "..", "tracked_matches.json")
+API_KEY = os.getenv("API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+HEADERS = {'x-apisports-key': API_KEY}
+BASE_URL = 'https://v3.football.api-sports.io'
 
-# --- Load bot_status (unchanged) ---
-if os.path.exists(STATUS_FILE):
-    with open(STATUS_FILE) as f:
-        bot_status = json.load(f)
-else:
-    bot_status = {"last_check":"Not yet run","active_matches":[]}
+STATUS_FILE = os.path.join(os.path.dirname(__file__), "..", "bot_status.json")
+STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "tracked_matches.json")
+
+def log_environment():
+    """Log critical environment variables (masking sensitive info)"""
+    logger.info("Environment check:")
+    logger.info(f"API_KEY present: {'Yes' if API_KEY else 'No'}")
+    logger.info(f"TELEGRAM_TOKEN present: {'Yes' if TELEGRAM_TOKEN else 'No'}")
+    logger.info(f"TELEGRAM_CHAT_ID present: {'Yes' if TELEGRAM_CHAT_ID else 'No'}")
+    logger.info(f"STATUS_FILE path: {STATUS_FILE}")
+    logger.info(f"STATE_FILE path: {STATE_FILE}")
+
+# --- Load bot_status ---
+try:
+    if os.path.exists(STATUS_FILE):
+        with open(STATUS_FILE) as f:
+            bot_status = json.load(f)
+        logger.info(f"Loaded bot_status from {STATUS_FILE}")
+    else:
+        bot_status = {"last_check": "Not yet run", "active_matches": []}
+        logger.warning(f"No status file found at {STATUS_FILE}, using defaults")
+except Exception as e:
+    bot_status = {"last_check": "Not yet run", "active_matches": []}
+    logger.error(f"Error loading bot_status: {e}, using defaults")
 
 # --- Load or initialize tracked_matches ---
-if os.path.exists(STATE_FILE):
-    try:
+try:
+    if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
             tracked_matches = json.load(f)
-    except:
+        logger.info(f"Loaded tracked_matches from {STATE_FILE} ({len(tracked_matches)} matches)")
+    else:
         tracked_matches = {}
-else:
+        logger.warning(f"No state file found at {STATE_FILE}, initializing empty")
+except Exception as e:
     tracked_matches = {}
+    logger.error(f"Error loading tracked_matches: {e}, initializing empty")
 
 def save_tracked_matches():
     try:
         with open(STATE_FILE, "w") as f:
             json.dump(tracked_matches, f)
+        logger.info(f"Saved tracked_matches to {STATE_FILE}")
     except Exception as e:
-        print(f"❌ Failed to save tracked_matches: {e}")
+        logger.error(f"Failed to save tracked_matches: {e}")
 
 def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data= {'chat_id':TELEGRAM_CHAT_ID,'text':msg}
-    print(f"📤 {msg}")
-    r = requests.post(url,data=data)
-    print("✅" if r.status_code==200 else f"❌ {r.status_code} {r.text}")
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        data = {'chat_id': TELEGRAM_CHAT_ID, 'text': msg}
+        logger.info(f"Sending Telegram message: {msg[:100]}...")  # Log first 100 chars
+        r = requests.post(url, data=data)
+        if r.status_code == 200:
+            logger.info("Telegram message sent successfully")
+        else:
+            logger.error(f"Telegram API error: {r.status_code} - {r.text}")
+    except Exception as e:
+        logger.error(f"Exception in send_telegram: {e}")
 
 def get_live_matches():
-    res = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS)
-    if res.status_code!=200:
-        print("❌ API ERROR",res.status_code)
+    try:
+        logger.info("Fetching live matches from API")
+        res = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS)
+        if res.status_code != 200:
+            logger.error(f"API ERROR: Status {res.status_code}, Response: {res.text}")
+            return []
+        
+        matches = res.json().get("response", [])
+        logger.info(f"Found {len(matches)} live matches")
+        return matches
+    except Exception as e:
+        logger.error(f"Exception in get_live_matches: {e}")
         return []
-    return res.json().get("response",[])
 
 def process_match(match):
-    fixture_id = match['fixture']['id']
-    match_name = f"{match['teams']['home']['name']} vs {match['teams']['away']['name']}"
-    league_name = match['league']['name']
-    league_country = match['league']['country']
-    league_info = f"{league_name} ({league_country})"
-    score = match['goals']
-    minute = match['fixture']['status']['elapsed']
-    status = match['fixture']['status']['short']
+    try:
+        fixture_id = match['fixture']['id']
+        match_name = f"{match['teams']['home']['name']} vs {match['teams']['away']['name']}"
+        league_name = match['league']['name']
+        league_country = match['league']['country']
+        league_info = f"{league_name} ({league_country})"
+        score = match['goals']
+        minute = match['fixture']['status']['elapsed']
+        status = match['fixture']['status']['short']
 
-    if fixture_id not in tracked_matches:
-        tracked_matches[fixture_id] = {
-            '36_bet_placed': False,
-            '36_result_checked': False,
-            '80_bet_placed': False,
-            '80_result_checked': False,
-            'match_name': match_name
-        }
+        logger.info(f"Processing match: {match_name} (ID: {fixture_id}, {minute}')")
 
-    state = tracked_matches[fixture_id]
+        if fixture_id not in tracked_matches:
+            tracked_matches[fixture_id] = {
+                '36_bet_placed': False,
+                '36_result_checked': False,
+                '80_bet_placed': False,
+                '80_result_checked': False,
+                'match_name': match_name
+            }
+            logger.info(f"New match added to tracking: {match_name}")
 
-    # 36' Bet logic (trigger between 35–37 minutes)
-    if 35 <= minute <= 37 and not state['36_bet_placed']:
-        score_36 = f"{score['home']}-{score['away']}"
-        state['score_36'] = score_36
-        state['36_bet_placed'] = True
-        send_telegram(f"⏱️ 36' - {match_name}\n🏆 {league_info}\n🔢 Score: {score_36}\n🎯 First Bet Placed")
+        state = tracked_matches[fixture_id]
+        logger.debug(f"Current state for {match_name}: {state}")
 
-    # HT check
-    if status == 'HT' and state['36_bet_placed'] and not state['36_result_checked']:
-        current_score = f"{score['home']}-{score['away']}"
-        if current_score == state['score_36']:
-            send_telegram(f"✅ HT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🎉 36’ Bet WON")
-            state['skip_80'] = True
-        else:
-            send_telegram(f"❌ HT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🔁 36’ Bet LOST — chasing at 80’")
-        state['36_result_checked'] = True
+        # 36' Bet logic
+        if 35 <= minute <= 37 and not state['36_bet_placed']:
+            score_36 = f"{score['home']}-{score['away']}"
+            state['score_36'] = score_36
+            state['36_bet_placed'] = True
+            logger.info(f"36' bet condition met for {match_name}, score: {score_36}")
+            send_telegram(f"⏱️ 36' - {match_name}\n🏆 {league_info}\n🔢 Score: {score_36}\n🎯 First Bet Placed")
 
-    # 80' Chase logic (trigger between 79–81 minutes)
-    if 79 <= minute <= 81 and state['36_result_checked'] and not state.get('skip_80', False) and not state['80_bet_placed']:
-        score_80 = f"{score['home']}-{score['away']}"
-        state['score_80'] = score_80
-        state['80_bet_placed'] = True
-        send_telegram(f"⏱️ 80' - {match_name}\n🏆 {league_info}\n🔢 Score: {score_80}\n🎯 Chase Bet Placed")
+        # HT check
+        if status == 'HT' and state['36_bet_placed'] and not state['36_result_checked']:
+            current_score = f"{score['home']}-{score['away']}"
+            if current_score == state['score_36']:
+                logger.info(f"36' bet WON for {match_name}")
+                send_telegram(f"✅ HT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🎉 36' Bet WON")
+                state['skip_80'] = True
+            else:
+                logger.info(f"36' bet LOST for {match_name}")
+                send_telegram(f"❌ HT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🔁 36' Bet LOST — chasing at 80'")
+            state['36_result_checked'] = True
 
-    # FT check for 80' bet
-    if status == 'FT' and state['80_bet_placed'] and not state['80_result_checked']:
-        final_score = f"{score['home']}-{score['away']}"
-        if final_score == state['score_80']:
-            send_telegram(f"✅ FT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {final_score}\n🎉 Chase Bet WON")
-        else:
-            send_telegram(f"❌ FT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {final_score}\n📉 Chase Bet LOST")
-        state['80_result_checked'] = True
+        # 80' Chase logic
+        if 79 <= minute <= 81 and state['36_result_checked'] and not state.get('skip_80', False) and not state['80_bet_placed']:
+            score_80 = f"{score['home']}-{score['away']}"
+            state['score_80'] = score_80
+            state['80_bet_placed'] = True
+            logger.info(f"80' bet condition met for {match_name}, score: {score_80}")
+            send_telegram(f"⏱️ 80' - {match_name}\n🏆 {league_info}\n🔢 Score: {score_80}\n🎯 Chase Bet Placed")
+
+        # FT check for 80' bet
+        if status == 'FT' and state['80_bet_placed'] and not state['80_result_checked']:
+            final_score = f"{score['home']}-{score['away']}"
+            if final_score == state['score_80']:
+                logger.info(f"80' chase bet WON for {match_name}")
+                send_telegram(f"✅ FT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {final_score}\n🎉 Chase Bet WON")
+            else:
+                logger.info(f"80' chase bet LOST for {match_name}")
+                send_telegram(f"❌ FT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {final_score}\n📉 Chase Bet LOST")
+            state['80_result_checked'] = True
+
+    except Exception as e:
+        logger.error(f"Error processing match {match.get('fixture', {}).get('id', 'unknown')}: {e}")
 
 def save_bot_status(last_check, matches):
-    with open(STATUS_FILE,"w") as f:
-        json.dump({"last_check":last_check,"active_matches":matches},f)
+    try:
+        with open(STATUS_FILE, "w") as f:
+            json.dump({"last_check": last_check, "active_matches": matches}, f)
+        logger.info(f"Saved bot status with {len(matches)} active matches")
+    except Exception as e:
+        logger.error(f"Error saving bot status: {e}")
 
 def run_bot_once():
-    print(f"[{datetime.now()}] Checking live matches…")
-    lives = get_live_matches()
-    save_bot_status(datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    [f"{m['teams']['home']['name']} vs {m['teams']['away']['name']} ({m['fixture']['status']['elapsed']}’)" for m in lives])
-    for m in lives:
-        process_match(m)
-    save_tracked_matches()
+    try:
+        logger.info("--- Starting bot cycle ---")
+        log_environment()
+        
+        logger.info("Fetching live matches")
+        lives = get_live_matches()
+        
+        match_list = [f"{m['teams']['home']['name']} vs {m['teams']['away']['name']} ({m['fixture']['status']['elapsed']}')" 
+                     for m in lives]
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        save_bot_status(timestamp, match_list)
+        logger.info(f"Tracking {len(lives)} matches: {', '.join(match_list[:3])}{'...' if len(match_list) > 3 else ''}")
+
+        for idx, m in enumerate(lives, 1):
+            logger.info(f"Processing match {idx}/{len(lives)}")
+            process_match(m)
+        
+        save_tracked_matches()
+        logger.info("--- Completed bot cycle ---\n")
+    except Exception as e:
+        logger.error(f"Fatal error in run_bot_once: {e}")
 
 def run_continuous_poll(minutes=120, interval=60):
-    end = datetime.now().timestamp() + minutes*60
+    logger.info(f"Starting continuous polling for {minutes} minutes with {interval} second interval")
+    end = datetime.now().timestamp() + minutes * 60
+    cycle = 0
+    
     while datetime.now().timestamp() < end:
-        run_bot_once()
+        cycle += 1
+        logger.info(f"\n=== Polling cycle {cycle} ===")
+        try:
+            run_bot_once()
+        except Exception as e:
+            logger.error(f"Error in polling cycle {cycle}: {e}")
+        
+        logger.info(f"Sleeping for {interval} seconds")
         time.sleep(interval)
+    
+    logger.info("Polling completed")
 
-if __name__=="__main__":
-    # Either run once (for cron every minute)
-    # run_bot_once()
+if __name__ == "__main__":
+    logger.info("===== Bot Starting =====")
+    log_environment()
+    
+    try:
+        # Either run once (for cron every minute)
+        # run_bot_once()
 
-    # Or keep alive for 2 hours, polling every minute:
-    run_continuous_poll(minutes=120, interval=60)
+        # Or keep alive for 2 hours, polling every minute:
+        run_continuous_poll(minutes=120, interval=60)
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error in main: {e}")
+    finally:
+        logger.info("===== Bot Shutting Down =====")
