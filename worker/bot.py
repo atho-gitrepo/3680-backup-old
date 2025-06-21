@@ -96,6 +96,24 @@ def get_live_matches():
         logger.error(f"Exception in get_live_matches: {e}")
         return []
 
+def get_match_details(fixture_id):
+    try:
+        logger.info(f"Fetching details for fixture {fixture_id}")
+        res = requests.get(f"{BASE_URL}/fixtures?id={fixture_id}", headers=HEADERS)
+        if res.status_code != 200:
+            logger.error(f"API ERROR for fixture {fixture_id}: {res.status_code}")
+            return None
+        
+        match_data = res.json().get('response', [])
+        if not match_data:
+            logger.warning(f"No data for fixture {fixture_id}")
+            return None
+            
+        return match_data[0]
+    except Exception as e:
+        logger.error(f"Exception getting match details: {e}")
+        return None
+
 def process_match(match):
     try:
         fixture_id = match['fixture']['id']
@@ -107,7 +125,7 @@ def process_match(match):
         minute = match['fixture']['status']['elapsed']
         status = match['fixture']['status']['short']
 
-        logger.info(f"Processing match: {match_name} (ID: {fixture_id}, {minute}')")
+        logger.info(f"Processing match: {match_name} (ID: {fixture_id}, {minute}', Status: {status})")
 
         if fixture_id not in tracked_matches:
             tracked_matches[fixture_id] = {
@@ -115,9 +133,18 @@ def process_match(match):
                 '36_result_checked': False,
                 '80_bet_placed': False,
                 '80_result_checked': False,
-                'match_name': match_name
+                'match_name': match_name,
+                'league_info': league_info,
+                'last_seen': datetime.now().isoformat(),
+                'last_status': status,
+                'last_minute': minute
             }
             logger.info(f"New match added to tracking: {match_name}")
+        else:
+            # Update last seen time and status
+            tracked_matches[fixture_id]['last_seen'] = datetime.now().isoformat()
+            tracked_matches[fixture_id]['last_status'] = status
+            tracked_matches[fixture_id]['last_minute'] = minute
 
         state = tracked_matches[fixture_id]
         logger.debug(f"Current state for {match_name}: {state}")
@@ -127,12 +154,14 @@ def process_match(match):
             score_36 = f"{score['home']}-{score['away']}"
             state['score_36'] = score_36
             state['36_bet_placed'] = True
+            state['36_bet_time'] = datetime.now().isoformat()
             logger.info(f"36' bet condition met for {match_name}, score: {score_36}")
             send_telegram(f"⏱️ 36' - {match_name}\n🏆 {league_info}\n🔢 Score: {score_36}\n🎯 First Bet Placed")
 
         # HT check
         if status == 'HT' and state['36_bet_placed'] and not state['36_result_checked']:
             current_score = f"{score['home']}-{score['away']}"
+            state['ht_score'] = current_score
             if current_score == state['score_36']:
                 logger.info(f"36' bet WON for {match_name}")
                 send_telegram(f"✅ HT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🎉 36' Bet WON")
@@ -147,12 +176,14 @@ def process_match(match):
             score_80 = f"{score['home']}-{score['away']}"
             state['score_80'] = score_80
             state['80_bet_placed'] = True
+            state['80_bet_time'] = datetime.now().isoformat()
             logger.info(f"80' bet condition met for {match_name}, score: {score_80}")
             send_telegram(f"⏱️ 80' - {match_name}\n🏆 {league_info}\n🔢 Score: {score_80}\n🎯 Chase Bet Placed")
 
-        # FT check for 80' bet
+        # FT check for 80' bet (immediate if match is FT)
         if status == 'FT' and state['80_bet_placed'] and not state['80_result_checked']:
             final_score = f"{score['home']}-{score['away']}"
+            state['final_score'] = final_score
             if final_score == state['score_80']:
                 logger.info(f"80' chase bet WON for {match_name}")
                 send_telegram(f"✅ FT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {final_score}\n🎉 Chase Bet WON")
@@ -163,6 +194,52 @@ def process_match(match):
 
     except Exception as e:
         logger.error(f"Error processing match {match.get('fixture', {}).get('id', 'unknown')}: {e}")
+
+def check_pending_80_bets():
+    logger.info("Checking pending 80' bets...")
+    now = datetime.now()
+    pending_bets = 0
+    resolved_bets = 0
+    
+    for fixture_id, state in list(tracked_matches.items()):
+        # Skip if no 80' bet placed or already resolved
+        if not state.get('80_bet_placed') or state.get('80_result_checked'):
+            continue
+            
+        # Skip if bet was placed recently (within 15 minutes)
+        if '80_bet_time' in state:
+            bet_time = datetime.fromisoformat(state['80_bet_time'])
+            if (now - bet_time).total_seconds() < 900:  # 15 minutes
+                continue
+                
+        pending_bets += 1
+        match_name = state.get('match_name', f"Fixture {fixture_id}")
+        
+        # Get updated match data
+        match = get_match_details(fixture_id)
+        if not match:
+            logger.warning(f"Couldn't get updated data for {match_name}")
+            continue
+            
+        status = match['fixture']['status']['short']
+        
+        # If match is finished, resolve the bet
+        if status == 'FT':
+            final_score = f"{match['goals']['home']}-{match['goals']['away']}"
+            state['final_score'] = final_score
+            state['80_result_checked'] = True
+            resolved_bets += 1
+            
+            if final_score == state['score_80']:
+                logger.info(f"80' chase bet WON for {match_name}")
+                send_telegram(f"✅ FT Result: {match_name}\n🏆 {state.get('league_info', '')}\n🔢 Score: {final_score}\n🎉 Chase Bet WON")
+            else:
+                logger.info(f"80' chase bet LOST for {match_name}")
+                send_telegram(f"❌ FT Result: {match_name}\n🏆 {state.get('league_info', '')}\n🔢 Score: {final_score}\n📉 Chase Bet LOST")
+        else:
+            logger.info(f"Match {match_name} still in progress (Status: {status})")
+    
+    logger.info(f"Checked {pending_bets} pending bets, resolved {resolved_bets}")
 
 def save_bot_status(last_check, matches):
     try:
@@ -190,6 +267,9 @@ def run_bot_once():
         for idx, m in enumerate(lives, 1):
             logger.info(f"Processing match {idx}/{len(lives)}")
             process_match(m)
+        
+        # Check for any pending 80' bets that need resolution
+        check_pending_80_bets()
         
         save_tracked_matches()
         logger.info("--- Completed bot cycle ---\n")
