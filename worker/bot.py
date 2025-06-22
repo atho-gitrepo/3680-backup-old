@@ -24,6 +24,7 @@ VALID_36_SCORES = {'0-0', '1-0', '0-1', '1-1'}  # Only bet on these scores at 36
 daily_tracker = {
     'date': datetime.now().strftime('%Y-%m-%d'),
     'matches_processed': 0
+    'limit_notification_sent': False  # Add this new flag
 }
 
 API_KEY = os.getenv("API_KEY")
@@ -42,6 +43,7 @@ def reset_daily_tracker():
         daily_tracker.update({
             'date': today,
             'matches_processed': 0
+            'limit_notification_sent': False  # Reset the notification flag
         })
         logger.info("Daily tracker reset for new day")
 
@@ -50,8 +52,10 @@ def check_limits():
     reset_daily_tracker()
     
     if daily_tracker['matches_processed'] >= MAX_MATCHES_PER_DAY:
-        logger.warning(f"Reached daily limit of {MAX_MATCHES_PER_DAY} matches")
-        send_telegram("🛑 Daily match limit reached! Stopping for today.")
+        if not daily_tracker['limit_notification_sent']:
+            logger.warning(f"Reached daily limit of {MAX_MATCHES_PER_DAY} matches")
+            send_telegram("🛑 Daily match limit reached! Stopping for today.")
+            daily_tracker['limit_notification_sent'] = True
         return False
         
     return True
