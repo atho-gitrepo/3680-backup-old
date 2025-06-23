@@ -42,7 +42,7 @@ def reset_daily_tracker():
     if daily_tracker['date'] != today:
         daily_tracker.update({
             'date': today,
-            'matches_processed': 0
+            'matches_processed': 0,
             'limit_notification_sent': False  # Reset the notification flag
         })
         logger.info("Daily tracker reset for new day")
