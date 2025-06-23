@@ -225,6 +225,10 @@ def process_match(match):
         if status == 'HT' and state['36_bet_placed'] and not state['36_result_checked']:
             ht_score = f"{score['home']}-{score['away']}"
             state['ht_score'] = ht_score
+            state['36_result_checked'] = True
+            
+            #Get the score at which bet was placed at 36'
+            bet_score = state.get('score_36', 'Unknown')
             
             if ht_score == state['score_36']:
                 logger.info(f"36' bet WON for {match_name}")
