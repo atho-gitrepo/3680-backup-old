@@ -23,7 +23,7 @@ VALID_36_SCORES = {'0-0', '1-0', '0-1', '1-1'}  # Only bet on these scores at 36
 # Tracking variables
 daily_tracker = {
     'date': datetime.now().strftime('%Y-%m-%d'),
-    'matches_processed': 0
+    'matches_processed': 0,
     'limit_notification_sent': False  # Add this new flag
 }
 
