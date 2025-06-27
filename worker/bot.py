@@ -1,3 +1,4 @@
+
 import requests
 from dotenv import load_dotenv
 load_dotenv()
@@ -16,17 +17,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Strict Policy Configuration
-MAX_MATCHES_PER_DAY = 15  # Hard limit of 15 matches per day
-VALID_36_SCORES = {'0-0', '1-0', '0-1', '1-1'}  # Only bet on these scores at 36'
-
-# Tracking variables
-daily_tracker = {
-    'date': datetime.now().strftime('%Y-%m-%d'),
-    'matches_processed': 0,
-    'limit_notification_sent': False  # Add this new flag
-}
-
 API_KEY = os.getenv("API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -36,42 +26,14 @@ BASE_URL = 'https://v3.football.api-sports.io'
 STATUS_FILE = os.path.join(os.path.dirname(__file__), "..", "bot_status.json")
 STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "tracked_matches.json")
 
-def reset_daily_tracker():
-    """Reset counters at midnight"""
-    today = datetime.now().strftime('%Y-%m-%d')
-    if daily_tracker['date'] != today:
-        daily_tracker.update({
-            'date': today,
-            'matches_processed': 0,
-            'limit_notification_sent': False  # Reset the notification flag
-        })
-        logger.info("Daily tracker reset for new day")
-
-def check_limits():
-    """Check if we should stop processing"""
-    reset_daily_tracker()
-    
-    if daily_tracker['matches_processed'] >= MAX_MATCHES_PER_DAY:
-        if not daily_tracker['limit_notification_sent']:
-            logger.warning(f"Reached daily limit of {MAX_MATCHES_PER_DAY} matches")
-            send_telegram("🛑 Daily match limit reached! Stopping for today.")
-            daily_tracker['limit_notification_sent'] = True
-        return False
-        
-    return True
-
-def make_api_call(url):
-    """Direct API call without cooldown"""
-    return requests.get(url, headers=HEADERS)
-
 def log_environment():
-    """Log critical environment variables and current limits"""
+    """Log critical environment variables (masking sensitive info)"""
     logger.info("Environment check:")
     logger.info(f"API_KEY present: {'Yes' if API_KEY else 'No'}")
     logger.info(f"TELEGRAM_TOKEN present: {'Yes' if TELEGRAM_TOKEN else 'No'}")
     logger.info(f"TELEGRAM_CHAT_ID present: {'Yes' if TELEGRAM_CHAT_ID else 'No'}")
-    logger.info(f"36' bet score filters: {VALID_36_SCORES}")
-    logger.info(f"Current daily status: {daily_tracker['matches_processed']}/{MAX_MATCHES_PER_DAY} matches")
+    logger.info(f"STATUS_FILE path: {STATUS_FILE}")
+    logger.info(f"STATE_FILE path: {STATE_FILE}")
 
 # --- Load bot_status ---
 try:
@@ -121,25 +83,16 @@ def send_telegram(msg):
         logger.error(f"Exception in send_telegram: {e}")
 
 def get_live_matches():
-    """Modified to use direct API calls and enforce daily limits"""
-    if not check_limits():
-        return []
-        
     try:
         logger.info("Fetching live matches from API")
-        res = make_api_call(f"{BASE_URL}/fixtures?live=all")
-        
+        res = requests.get(f"{BASE_URL}/fixtures?live=all", headers=HEADERS)
         if res.status_code != 200:
             logger.error(f"API ERROR: Status {res.status_code}, Response: {res.text}")
             return []
-            
+        
         matches = res.json().get("response", [])
         logger.info(f"Found {len(matches)} live matches")
-        
-        # Calculate remaining matches we can process today
-        remaining_matches = MAX_MATCHES_PER_DAY - daily_tracker['matches_processed']
-        return matches[:remaining_matches]
-        
+        return matches
     except Exception as e:
         logger.error(f"Exception in get_live_matches: {e}")
         return []
@@ -147,7 +100,7 @@ def get_live_matches():
 def get_match_details(fixture_id):
     try:
         logger.info(f"Fetching details for fixture {fixture_id}")
-        res = make_api_call(f"{BASE_URL}/fixtures?id={fixture_id}")
+        res = requests.get(f"{BASE_URL}/fixtures?id={fixture_id}", headers=HEADERS)
         if res.status_code != 200:
             logger.error(f"API ERROR for fixture {fixture_id}: {res.status_code}")
             return None
@@ -163,10 +116,6 @@ def get_match_details(fixture_id):
         return None
 
 def process_match(match):
-    """Modified without consecutive wins tracking"""
-    if not check_limits():
-        return
-        
     try:
         fixture_id = match['fixture']['id']
         match_name = f"{match['teams']['home']['name']} vs {match['teams']['away']['name']}"
@@ -176,9 +125,8 @@ def process_match(match):
         score = match['goals']
         minute = match['fixture']['status']['elapsed']
         status = match['fixture']['status']['short']
-        current_score = f"{score['home']}-{score['away']}"
 
-        logger.info(f"Processing match: {match_name} (ID: {fixture_id}, {minute}', Status: {status}, Score: {current_score})")
+        logger.info(f"Processing match: {match_name} (ID: {fixture_id}, {minute}', Status: {status})")
 
         if fixture_id not in tracked_matches:
             tracked_matches[fixture_id] = {
@@ -193,56 +141,35 @@ def process_match(match):
                 'last_minute': minute
             }
             logger.info(f"New match added to tracking: {match_name}")
+        else:
+            # Update last seen time and status
+            tracked_matches[fixture_id]['last_seen'] = datetime.now().isoformat()
+            tracked_matches[fixture_id]['last_status'] = status
+            tracked_matches[fixture_id]['last_minute'] = minute
 
         state = tracked_matches[fixture_id]
-        state['last_seen'] = datetime.now().isoformat()
-        state['last_status'] = status
-        state['last_minute'] = minute
+        logger.debug(f"Current state for {match_name}: {state}")
 
-        # 36' Bet logic with score filter
-        if (35 <= minute <= 37 and 
-            not state['36_bet_placed'] and 
-            current_score in VALID_36_SCORES):
-            
-            state['score_36'] = current_score
+        # 36' Bet logic
+        if 35 <= minute <= 37 and not state['36_bet_placed']:
+            score_36 = f"{score['home']}-{score['away']}"
+            state['score_36'] = score_36
             state['36_bet_placed'] = True
             state['36_bet_time'] = datetime.now().isoformat()
-            daily_tracker['matches_processed'] += 1
-            
-            logger.info(f"36' bet placed for {match_name} at {current_score}")
-            send_telegram(
-                f"⏱️ 36' - {match_name}\n"
-                f"🏆 {league_info}\n"
-                f"🔢 Score: {current_score}\n"
-                f"🎯 Bet Placed (Valid Score)"
-            )
-        elif (35 <= minute <= 37 and 
-              not state['36_bet_placed'] and 
-              current_score not in VALID_36_SCORES):
-            logger.info(f"Skipping 36' bet for {match_name} - invalid score {current_score}")
+            logger.info(f"36' bet condition met for {match_name}, score: {score_36}")
+            send_telegram(f"⏱️ 36' - {match_name}\n🏆 {league_info}\n🔢 Score: {score_36}\n🎯 First Bet Placed")
 
-        # HT check (simplified without streak tracking)
+        # HT check
         if status == 'HT' and state['36_bet_placed'] and not state['36_result_checked']:
-            ht_score = f"{score['home']}-{score['away']}"
-            state['ht_score'] = ht_score
-            
-            if ht_score == state['score_36']:
+            current_score = f"{score['home']}-{score['away']}"
+            state['ht_score'] = current_score
+            if current_score == state['score_36']:
                 logger.info(f"36' bet WON for {match_name}")
-                send_telegram(
-                    f"✅ HT Result: {match_name}\n"
-                    f"🏆 {league_info}\n"
-                    f"🔢 Score: {ht_score}\n"
-                    f"🎉 Bet WON"
-                )
+                send_telegram(f"✅ HT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🎉 36' Bet WON")
                 state['skip_80'] = True
             else:
                 logger.info(f"36' bet LOST for {match_name}")
-                send_telegram(
-                    f"❌ HT Result: {match_name}\n"
-                    f"🏆 {league_info}\n"
-                    f"🔢 Score: {ht_score}\n"
-                    f"🔁 Bet LOST — chasing at 80'"
-                )
+                send_telegram(f"❌ HT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🔁 36' Bet LOST — chasing at 80'")
             state['36_result_checked'] = True
 
         # 80' Chase logic
@@ -270,19 +197,12 @@ def process_match(match):
         logger.error(f"Error processing match {match.get('fixture', {}).get('id', 'unknown')}: {e}")
 
 def check_pending_80_bets():
-    """Check and resolve pending 80' bets"""
-    if not check_limits():
-        return
-        
     logger.info("Checking pending 80' bets...")
     now = datetime.now()
     pending_bets = 0
     resolved_bets = 0
     
     for fixture_id, state in list(tracked_matches.items()):
-        if not check_limits():
-            break
-            
         # Skip if no 80' bet placed or already resolved
         if not state.get('80_bet_placed') or state.get('80_result_checked'):
             continue
@@ -331,16 +251,11 @@ def save_bot_status(last_check, matches):
         logger.error(f"Error saving bot status: {e}")
 
 def run_bot_once():
-    """Main bot cycle"""
     try:
-        if not check_limits():
-            return
-            
         logger.info("--- Starting bot cycle ---")
         log_environment()
         
-        logger.info(f"Daily status: {daily_tracker['matches_processed']}/{MAX_MATCHES_PER_DAY} matches")
-        
+        logger.info("Fetching live matches")
         lives = get_live_matches()
         
         match_list = [f"{m['teams']['home']['name']} vs {m['teams']['away']['name']} ({m['fixture']['status']['elapsed']}')" 
@@ -351,8 +266,6 @@ def run_bot_once():
         logger.info(f"Tracking {len(lives)} matches: {', '.join(match_list[:3])}{'...' if len(match_list) > 3 else ''}")
 
         for idx, m in enumerate(lives, 1):
-            if not check_limits():
-                break
             logger.info(f"Processing match {idx}/{len(lives)}")
             process_match(m)
         
@@ -365,18 +278,11 @@ def run_bot_once():
         logger.error(f"Fatal error in run_bot_once: {e}")
 
 def run_continuous_poll(minutes=120, interval=60):
-    """Main polling loop"""
     logger.info(f"Starting continuous polling for {minutes} minutes with {interval} second interval")
-    logger.info(f"Daily limit: Max {MAX_MATCHES_PER_DAY} matches/day")
-    
     end = datetime.now().timestamp() + minutes * 60
     cycle = 0
     
     while datetime.now().timestamp() < end:
-        if not check_limits():
-            logger.info("Stopping early due to daily match limit")
-            break
-            
         cycle += 1
         logger.info(f"\n=== Polling cycle {cycle} ===")
         try:
@@ -394,6 +300,10 @@ if __name__ == "__main__":
     log_environment()
     
     try:
+        # Either run once (for cron every minute)
+        # run_bot_once()
+
+        # Or keep alive for 2 hours, polling every minute:
         run_continuous_poll(minutes=120, interval=60)
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
