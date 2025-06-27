@@ -283,34 +283,13 @@ def run_bot_once():
     except Exception as e:
         logger.error(f"Fatal error in run_bot_once: {e}")
 
-def run_continuous_poll(minutes=120, interval=60):
-    logger.info(f"Starting continuous polling for {minutes} minutes with {interval} second interval")
-    end = datetime.now().timestamp() + minutes * 60
-    cycle = 0
-    
-    while datetime.now().timestamp() < end:
-        cycle += 1
-        logger.info(f"\n=== Polling cycle {cycle} ===")
-        try:
-            run_bot_once()
-        except Exception as e:
-            logger.error(f"Error in polling cycle {cycle}: {e}")
-        
-        logger.info(f"Sleeping for {interval} seconds")
-        time.sleep(interval)
-    
-    logger.info("Polling completed")
-
 if __name__ == "__main__":
     logger.info("===== Bot Starting =====")
     log_environment()
     
     try:
-        # Either run once (for cron every minute)
-        # run_bot_once()
-
-        # Or keep alive for 2 hours, polling every minute:
-        run_continuous_poll(minutes=120, interval=60)
+        # Run the bot once
+        run_bot_once()
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
