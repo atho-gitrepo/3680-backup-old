@@ -1,4 +1,3 @@
-
 import requests
 from dotenv import load_dotenv
 load_dotenv()
@@ -25,6 +24,9 @@ BASE_URL = 'https://v3.football.api-sports.io'
 
 STATUS_FILE = os.path.join(os.path.dirname(__file__), "..", "bot_status.json")
 STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "tracked_matches.json")
+
+# Allowed scores for betting
+ALLOWED_SCORES = {'0-1', '1-0', '0-0', '1-1', '2-0', '0-2'}
 
 def log_environment():
     """Log critical environment variables (masking sensitive info)"""
@@ -125,6 +127,7 @@ def process_match(match):
         score = match['goals']
         minute = match['fixture']['status']['elapsed']
         status = match['fixture']['status']['short']
+        current_score = f"{score['home']}-{score['away']}"
 
         logger.info(f"Processing match: {match_name} (ID: {fixture_id}, {minute}', Status: {status})")
 
@@ -150,19 +153,20 @@ def process_match(match):
         state = tracked_matches[fixture_id]
         logger.debug(f"Current state for {match_name}: {state}")
 
-        # 36' Bet logic
+        # 36' Bet logic - only place bet if score is in allowed scores
         if 35 <= minute <= 37 and not state['36_bet_placed']:
-            score_36 = f"{score['home']}-{score['away']}"
-            state['score_36'] = score_36
-            state['36_bet_placed'] = True
-            state['36_bet_time'] = datetime.now().isoformat()
-            logger.info(f"36' bet condition met for {match_name}, score: {score_36}")
-            send_telegram(f"⏱️ 36' - {match_name}\n🏆 {league_info}\n🔢 Score: {score_36}\n🎯 First Bet Placed")
+            if current_score in ALLOWED_SCORES:
+                state['score_36'] = current_score
+                state['36_bet_placed'] = True
+                state['36_bet_time'] = datetime.now().isoformat()
+                logger.info(f"36' bet condition met for {match_name}, score: {current_score}")
+                send_telegram(f"⏱️ 36' - {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🎯 First Bet Placed")
+            else:
+                state['skip_80'] = True
+                logger.info(f"Score {current_score} not in allowed scores, skipping bet for {match_name}")
 
         # HT check
         if status == 'HT' and state['36_bet_placed'] and not state['36_result_checked']:
-            current_score = f"{score['home']}-{score['away']}"
-            state['ht_score'] = current_score
             if current_score == state['score_36']:
                 logger.info(f"36' bet WON for {match_name}")
                 send_telegram(f"✅ HT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🎉 36' Bet WON")
@@ -172,25 +176,27 @@ def process_match(match):
                 send_telegram(f"❌ HT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🔁 36' Bet LOST — chasing at 80'")
             state['36_result_checked'] = True
 
-        # 80' Chase logic
+        # 80' Chase logic - only place bet if score is in allowed scores
         if 79 <= minute <= 81 and state['36_result_checked'] and not state.get('skip_80', False) and not state['80_bet_placed']:
-            score_80 = f"{score['home']}-{score['away']}"
-            state['score_80'] = score_80
-            state['80_bet_placed'] = True
-            state['80_bet_time'] = datetime.now().isoformat()
-            logger.info(f"80' bet condition met for {match_name}, score: {score_80}")
-            send_telegram(f"⏱️ 80' - {match_name}\n🏆 {league_info}\n🔢 Score: {score_80}\n🎯 Chase Bet Placed")
+            if current_score in ALLOWED_SCORES:
+                state['score_80'] = current_score
+                state['80_bet_placed'] = True
+                state['80_bet_time'] = datetime.now().isoformat()
+                logger.info(f"80' bet condition met for {match_name}, score: {current_score}")
+                send_telegram(f"⏱️ 80' - {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🎯 Chase Bet Placed")
+            else:
+                logger.info(f"Score {current_score} not in allowed scores, skipping chase bet for {match_name}")
+                state['80_result_checked'] = True  # Mark as checked to avoid further processing
 
         # FT check for 80' bet (immediate if match is FT)
         if status == 'FT' and state['80_bet_placed'] and not state['80_result_checked']:
-            final_score = f"{score['home']}-{score['away']}"
-            state['final_score'] = final_score
-            if final_score == state['score_80']:
+            state['final_score'] = current_score
+            if current_score == state['score_80']:
                 logger.info(f"80' chase bet WON for {match_name}")
-                send_telegram(f"✅ FT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {final_score}\n🎉 Chase Bet WON")
+                send_telegram(f"✅ FT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n🎉 Chase Bet WON")
             else:
                 logger.info(f"80' chase bet LOST for {match_name}")
-                send_telegram(f"❌ FT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {final_score}\n📉 Chase Bet LOST")
+                send_telegram(f"❌ FT Result: {match_name}\n🏆 {league_info}\n🔢 Score: {current_score}\n📉 Chase Bet LOST")
             state['80_result_checked'] = True
 
     except Exception as e:
@@ -223,20 +229,20 @@ def check_pending_80_bets():
             continue
             
         status = match['fixture']['status']['short']
+        current_score = f"{match['goals']['home']}-{match['goals']['away']}"
         
         # If match is finished, resolve the bet
         if status == 'FT':
-            final_score = f"{match['goals']['home']}-{match['goals']['away']}"
-            state['final_score'] = final_score
+            state['final_score'] = current_score
             state['80_result_checked'] = True
             resolved_bets += 1
             
-            if final_score == state['score_80']:
+            if current_score == state['score_80']:
                 logger.info(f"80' chase bet WON for {match_name}")
-                send_telegram(f"✅ FT Result: {match_name}\n🏆 {state.get('league_info', '')}\n🔢 Score: {final_score}\n🎉 Chase Bet WON")
+                send_telegram(f"✅ FT Result: {match_name}\n🏆 {state.get('league_info', '')}\n🔢 Score: {current_score}\n🎉 Chase Bet WON")
             else:
                 logger.info(f"80' chase bet LOST for {match_name}")
-                send_telegram(f"❌ FT Result: {match_name}\n🏆 {state.get('league_info', '')}\n🔢 Score: {final_score}\n📉 Chase Bet LOST")
+                send_telegram(f"❌ FT Result: {match_name}\n🏆 {state.get('league_info', '')}\n🔢 Score: {current_score}\n📉 Chase Bet LOST")
         else:
             logger.info(f"Match {match_name} still in progress (Status: {status})")
     
