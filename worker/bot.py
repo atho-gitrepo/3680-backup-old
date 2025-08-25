@@ -108,6 +108,19 @@ class FirebaseManager:
         except Exception as e:
             logger.error(f"Firestore Error during move_to_resolved: {e}")
 
+    def add_to_resolved_bets(self, match_id, bet_info, outcome):
+        resolved_bet_ref = self.db.collection('resolved_bets').document(f"{match_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}")
+        try:
+            resolved_data = {
+                **bet_info,
+                'outcome': outcome,
+                'resolved_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            resolved_bet_ref.set(resolved_data)
+            logger.info(f"Added bet for match {match_id} to resolved bets with outcome: {outcome}")
+        except Exception as e:
+            logger.error(f"Firestore Error during add_to_resolved_bets: {e}")
+
 # Initialize Firebase
 try:
     firebase_manager = FirebaseManager(FIREBASE_CREDENTIALS_JSON_STRING)
@@ -255,7 +268,8 @@ def check_ht_result(state, fixture_id, score, match_info):
             f"🔁 36' Bet LOST — eligible for chase"
         )
         state['36_bet_won'] = False
-        firebase_manager.move_to_resolved(fixture_id, unresolved_bet_data, 'loss')
+        # Add a record to resolved_bets for the loss, but keep the original in unresolved for the chase bet.
+        firebase_manager.add_to_resolved_bets(fixture_id, unresolved_bet_data, 'loss')
     
     state['36_result_checked'] = True
     firebase_manager.update_tracked_match(fixture_id, state)
@@ -341,11 +355,11 @@ def process_match(match):
         place_chase_bet(state, fixture_id, score, match_info)
 
 def check_unresolved_bets():
-    """Check ALL unresolved bets by fetching finished matches for specific leagues."""
-    logger.info("Checking unresolved bets...")
-    unresolved_bets = firebase_manager.get_unresolved_bets()
+    """Check ONLY unresolved CHASE bets by fetching finished matches for specific leagues."""
+    logger.info("Checking unresolved CHASE bets...")
+    unresolved_bets = firebase_manager.get_unresolved_bets(BET_TYPE_CHASE)
     if not unresolved_bets:
-        logger.info("No unresolved bets found")
+        logger.info("No unresolved CHASE bets found")
         return
         
     unresolved_finished_fixtures = {}
@@ -378,17 +392,12 @@ def check_unresolved_bets():
         bet_type = bet_info['bet_type']
         country = bet_info.get('country', 'N/A')
         
-        logger.info(f"Resolving bet for finished match {match_id}: {match_name} - Final: {final_score}")
+        logger.info(f"Resolving chase bet for finished match {match_id}: {match_name} - Final: {final_score}")
         
         outcome = None
         message = ""
         
-        if bet_type == BET_TYPE_REGULAR:
-            outcome = 'error'
-            message = f"⚠️ FT Result: {match_name}\n🏆 {league_name} ({country})\n🔢 Score: {final_score}\n❓ Regular bet was not resolved at HT. Marked as error."
-            logger.warning(f"Regular bet for {match_id} was not resolved at HT")
-            
-        elif bet_type == BET_TYPE_CHASE:
+        if bet_type == BET_TYPE_CHASE:
             chase_score = bet_info.get('80_score', '')
             if final_score == chase_score:
                 outcome = 'win'
