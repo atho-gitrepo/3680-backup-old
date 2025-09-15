@@ -33,12 +33,13 @@ BASE_URL = 'https://v3.football.api-sports.io'
 # --- CONSTANTS ---
 SLEEP_TIME = 90
 MINUTES_REGULAR_BET = [35, 36, 37]
-MINUTES_CHASE_BET = [79, 80, 81]
+MINUTES_80_MINUTE_BET = [79, 80, 81]
 BET_TYPE_REGULAR = 'regular'
-BET_TYPE_CHASE = 'chase'
+BET_TYPE_80_MINUTE = '80_minute'
 STATUS_LIVE = ['LIVE', '1H', '2H', 'ET', 'P']
 STATUS_HALFTIME = 'HT'
 STATUS_FINISHED = ['FT', 'AET', 'PEN']
+BET_SCORES_80_MINUTE = ['3-0','0-3']
 
 class FirebaseManager:
     """Manages all interactions with the Firebase Firestore database."""
@@ -70,6 +71,13 @@ class FirebaseManager:
             self.db.collection('tracked_matches').document(str(match_id)).set(data, merge=True)
         except Exception as e:
             logger.error(f"Firestore Error during update_tracked_match: {e}")
+            
+    # ADDED: New function to delete tracked match record
+    def delete_tracked_match(self, match_id):
+        try:
+            self.db.collection('tracked_matches').document(str(match_id)).delete()
+        except Exception as e:
+            logger.error(f"Firestore Error during delete_tracked_match: {e}")
 
     def get_unresolved_bets(self):
         try:
@@ -93,14 +101,16 @@ class FirebaseManager:
             for doc in bets:
                 bet_info = doc.to_dict()
                 placed_at_str = bet_info.get('placed_at')
-                if placed_at_str:
-                    try:
-                        placed_at_dt = datetime.strptime(placed_at_str, '%Y-%m-%d %H:%M:%S')
-                        if placed_at_dt < time_threshold:
-                            stale_bets[doc.id] = bet_info
-                    except ValueError:
-                        logger.warning(f"Could not parse placed_at timestamp for bet {doc.id}")
-                        continue
+                # Only process 80_minute bets here
+                if bet_info.get('bet_type') == BET_TYPE_80_MINUTE:
+                    if placed_at_str:
+                        try:
+                            placed_at_dt = datetime.strptime(placed_at_str, '%Y-%m-%d %H:%M:%S')
+                            if placed_at_dt < time_threshold:
+                                stale_bets[doc.id] = bet_info
+                        except ValueError:
+                            logger.warning(f"Could not parse placed_at timestamp for bet {doc.id}")
+                            continue
             return stale_bets
         except Exception as e:
             logger.error(f"Firestore Error during get_stale_unresolved_bets: {e}")
@@ -238,45 +248,42 @@ def place_regular_bet(state, fixture_id, score, match_info):
 def check_ht_result(state, fixture_id, score, match_info):
     """Checks the result of the 36' bet at halftime."""
     current_score = score
-    state['ht_score'] = current_score
+    
+    # MODIFIED: Get the bet data from unresolved_bets and delete it immediately
     unresolved_bet_data = firebase_manager.get_unresolved_bets().get(str(fixture_id))
-    
-    if not unresolved_bet_data or unresolved_bet_data.get('bet_type') != BET_TYPE_REGULAR:
-        state['36_result_checked'] = True
-        firebase_manager.update_tracked_match(fixture_id, state)
-        return
-        
-    outcome = 'win' if current_score == state.get('36_score', '') else 'loss'
-    message = f"✅ HT Result: {match_info['match_name']}\n🏆 {match_info['league_name']} ({match_info['country']})\n🔢 Score: {current_score}\n🎉 36' Bet WON" if outcome == 'win' else f"❌ HT Result: {match_info['match_name']}\n🏆 {match_info['league_name']} ({match_info['country']})\n🔢 Score: {current_score}\n🔁 36' Bet LOST — eligible for chase"
-    send_telegram(message)
-    
-    if outcome == 'win':
+    if unresolved_bet_data:
+        # Resolve the bet and move it to resolved_bets
+        outcome = 'win' if current_score == unresolved_bet_data.get('36_score', '') else 'loss'
         firebase_manager.move_to_resolved(fixture_id, unresolved_bet_data, outcome)
-        state['36_bet_won'] = True
-    else:
-        firebase_manager.add_to_resolved_bets(fixture_id, unresolved_bet_data, outcome)
-        state['36_bet_won'] = False
+        
+        # Send Telegram message
+        message = f"✅ HT Result: {match_info['match_name']}\n🏆 {match_info['league_name']} ({match_info['country']})\n🔢 Score: {current_score}\n🎉 36' Bet WON" if outcome == 'win' else f"❌ HT Result: {match_info['match_name']}\n🏆 {match_info['league_name']} ({match_info['country']})\n🔢 Score: {current_score}\n🔁 36' Bet LOST"
+        send_telegram(message)
+    
+    # MODIFIED: Delete from tracked_matches regardless of outcome
+    firebase_manager.delete_tracked_match(fixture_id)
 
-    state['36_result_checked'] = True
-    firebase_manager.update_tracked_match(fixture_id, state)
-
-def place_chase_bet(state, fixture_id, score, match_info):
-    """Handles placing the 80' chase bet."""
-    if state.get('36_bet_won') is False:
-        state['80_score'] = score
+def place_80_minute_bet(state, fixture_id, score, match_info):
+    """Handles placing the new 80' bet."""
+    if score in BET_SCORES_80_MINUTE:
         state['80_bet_placed'] = True
+        state['80_score'] = score
         firebase_manager.update_tracked_match(fixture_id, state)
         unresolved_data = {
             'match_name': match_info['match_name'],
             'placed_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
-            'bet_type': BET_TYPE_CHASE,
-            '36_score': state.get('36_score'),
-            'ht_score': state.get('ht_score'),
+            'league': match_info['league_name'],
+            'country': match_info['country'],
+            'league_id': match_info['league_id'],
+            'bet_type': BET_TYPE_80_MINUTE,
             '80_score': score,
             'fixture_id': fixture_id
         }
         firebase_manager.add_unresolved_bet(fixture_id, unresolved_data)
-        send_telegram(f"⏱️ 80' CHASE BET: {match_info['match_name']}\n🏆 {match_info['league_name']} ({match_info['country']})\n🔢 Score: {score}\n🎯 Betting for Correct Score\n💡 Covering lost 36' bet ({state.get('36_score')} → {state.get('ht_score')})")
+        send_telegram(f"⏱️ 80' - {match_info['match_name']}\n🏆 {match_info['league_name']} ({match_info['country']})\n🔢 Score: {score}\n🎯 80' Correct Score Bet Placed")
+    else:
+        state['80_bet_placed'] = True
+        firebase_manager.update_tracked_match(fixture_id, state)
 
 def process_live_match(match):
     """
@@ -299,12 +306,14 @@ def process_live_match(match):
     if minute is None and status.upper() not in [STATUS_HALFTIME]:
         return
     
+    # We now get the tracked match and use it. If it doesn't exist, we assume it's a new match.
     state = firebase_manager.get_tracked_match(fixture_id) or {
-        '36_bet_placed': False, '36_result_checked': False, '36_bet_won': None,
-        '80_bet_placed': False, '36_score': None, 'ht_score': None,
+        '36_bet_placed': False,
+        '80_bet_placed': False,
+        '36_score': None,
+        '80_score': None,
     }
-    firebase_manager.update_tracked_match(fixture_id, state)
-
+    
     match_info = {
         'match_name': match_name,
         'league_name': match['league']['name'],
@@ -314,10 +323,11 @@ def process_live_match(match):
 
     if status.upper() == '1H' and minute in MINUTES_REGULAR_BET and not state.get('36_bet_placed'):
         place_regular_bet(state, fixture_id, score, match_info)
-    elif status.upper() == STATUS_HALFTIME and state.get('36_bet_placed') and not state.get('36_result_checked'):
+    elif status.upper() == STATUS_HALFTIME and state.get('36_bet_placed') and firebase_manager.get_unresolved_bets().get(str(fixture_id)):
+        # MODIFIED: Check if the bet is still unresolved
         check_ht_result(state, fixture_id, score, match_info)
-    elif status.upper() == '2H' and minute in MINUTES_CHASE_BET and not state.get('80_bet_placed'):
-        place_chase_bet(state, fixture_id, score, match_info)
+    elif status.upper() == '2H' and minute in MINUTES_80_MINUTE_BET and not state.get('80_bet_placed'):
+        place_80_minute_bet(state, fixture_id, score, match_info)
 
 def check_and_resolve_stale_bets():
     """
@@ -341,30 +351,24 @@ def check_and_resolve_stale_bets():
             match_name = bet_info.get('match_name', f"Match {match_id}")
             bet_type = bet_info.get('bet_type', 'unknown')
 
-            if bet_type == BET_TYPE_CHASE:
+            # MODIFIED: This logic now only needs to handle the 80-minute bet
+            if bet_type == BET_TYPE_80_MINUTE:
                 bet_score = bet_info.get('80_score')
                 outcome = 'win' if final_score == bet_score else 'loss'
-                message = f"🏁 FINAL RESULT - Chase Bet\n⚽ {match_name}\n🔢 Final Score: {final_score}\n🎯 Bet on 80' Score: {bet_score}\n📊 Outcome: {'✅ WON' if outcome == 'win' else '❌ LOST'}"
-            else: # BET_TYPE_REGULAR
-                bet_score = bet_info.get('36_score')
-                outcome = 'win' if final_score == bet_score else 'loss'
-                message = f"🏁 FINAL RESULT - Regular Bet\n⚽ {match_name}\n🔢 Final Score: {final_score}\n🎯 Bet on 36' Score: {bet_score}\n📊 Outcome: {'✅ WON' if outcome == 'win' else '❌ LOST'}"
+                message = f"🏁 FINAL RESULT - 80' Bet\n⚽ {match_name}\n🔢 Final Score: {final_score}\n🎯 Bet on 80' Score: {bet_score}\n📊 Outcome: {'✅ WON' if outcome == 'win' else '❌ LOST'}"
                 
-            if send_telegram(message):
-                firebase_manager.move_to_resolved(match_id, bet_info, outcome)
-            time.sleep(1)
+                if send_telegram(message):
+                    firebase_manager.move_to_resolved(match_id, bet_info, outcome)
+                time.sleep(1)
 
 def run_bot_once():
     """Run one complete cycle of the bot"""
     logger.info("Starting bot cycle...")
     
-    # Process all live matches, which uses one API call.
     live_matches = get_live_matches()
     for match in live_matches:
         process_live_match(match)
     
-    # Check for stale, unresolved bets and resolve them. This will make API calls, but only
-    # for bets that have waited long enough to be considered finished.
     check_and_resolve_stale_bets()
     
     logger.info("Bot cycle completed.")
