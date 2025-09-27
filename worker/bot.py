@@ -39,7 +39,7 @@ BET_TYPE_80_MINUTE = '80_minute'
 STATUS_LIVE = ['LIVE', '1H', '2H', 'ET', 'P']
 STATUS_HALFTIME = 'HT'
 STATUS_FINISHED = ['FT', 'AET', 'PEN']
-BET_SCORES_80_MINUTE = ['3-0','0-3']
+BET_SCORES_80_MINUTE = ['2-0','0-3']
 
 class FirebaseManager:
     """Manages all interactions with the Firebase Firestore database."""
